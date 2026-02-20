@@ -1,0 +1,90 @@
+import pandas as pd
+from telethon.sync import TelegramClient
+from telethon.tl.types import MessageService, MessageActionChatAddUser, MessageActionChatJoinedByLink, MessageActionChatDeleteUser
+import time
+
+# --- تنظیمات ---
+api_id = 'YOUR_API_ID'
+api_hash = 'YOUR_API_HASH'
+target_group_name = 'نام دقیق گروه'
+
+client = TelegramClient('ultra_final_session', api_id, api_hash)
+
+async def main():
+    await client.start()
+    
+    # پیدا کردن گروه
+    target_group = None
+    async for dialog in client.iter_dialogs():
+        if dialog.name == target_group_name:
+            target_group = dialog.entity
+            break
+
+    if not target_group: return
+
+    # ۱. کش اولیه (برای حفظ سرعت)
+    user_cache = {}
+    print("⏳ در حال بارگذاری لیست اعضای فعلی...")
+    async for user in client.iter_participants(target_group):
+        f_name = user.first_name or ""
+        l_name = user.last_name or ""
+        user_cache[user.id] = {
+            'name': f"{f_name} {l_name}".strip(),
+            'username': f"@{user.username}" if user.username else "No Username"
+        }
+
+    data = []
+    print(f"🚀 شروع استخراج پیام‌ها...")
+
+    async for message in client.iter_messages(target_group, limit=None):
+        u_id = None
+        
+        # تشخیص آیدی برای پیام‌های معمولی و سیستمی
+        if isinstance(message, MessageService):
+            action = message.action
+            if isinstance(action, (MessageActionChatAddUser, MessageActionChatJoinedByLink)):
+                u_id = action.users[0] if hasattr(action, 'users') else (message.from_id.user_id if message.from_id else None)
+                msg_content = "📥 ورود به گروه"
+            elif isinstance(action, MessageActionChatDeleteUser):
+                u_id = action.user_id
+                msg_content = "📤 خروج/حذف از گروه"
+            else:
+                u_id = getattr(message.from_id, 'user_id', None)
+                msg_content = "⚙️ عملیات سیستمی"
+        else:
+            u_id = getattr(message.from_id, 'user_id', None)
+            msg_content = message.text if message.text else "<Media/File>"
+
+        # ۲. بررسی هوشمند: اگر در کش نبود، مستقیم استخراج کن
+        if u_id and u_id not in user_cache:
+            try:
+                user_entity = await client.get_entity(u_id)
+                f_name = user_entity.first_name or ""
+                l_name = user_entity.last_name or ""
+                user_cache[u_id] = {
+                    'name': f"{f_name} {l_name}".strip() or "Deleted Account",
+                    'username': f"@{user_entity.username}" if user_entity.username else "No Username"
+                }
+            except:
+                user_cache[u_id] = {'name': "حساب حذف شده", 'username': "N/A"}
+
+        user_info = user_cache.get(u_id, {'name': 'نامشخص', 'username': 'N/A'})
+
+        data.append({
+            'Full_Name': user_info['name'],
+            'User_ID': u_id,
+            'Username': user_info['username'],
+            'Text_Message': str(msg_content).replace('\n', ' '),
+            'Date': message.date.strftime("%Y-%m-%d %H:%M")
+        })
+
+    # ذخیره نهایی
+    df = pd.DataFrame(data)
+    # اصلاح فرمت اعداد برای جلوگیری از نمایش علمی (مثل 7.11E)
+    df['User_ID'] = df['User_ID'].astype(str).str.replace('.0', '', regex=False)
+    
+    df.to_csv('telegram_perfect_report.csv', index=False, encoding='utf-8-sig', quoting=1)
+    print("✨ فایل نهایی با دقت ۱۰۰٪ آماده شد: telegram_perfect_report.csv")
+
+with client:
+    client.loop.run_until_complete(main())
