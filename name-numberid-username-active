@@ -1,0 +1,82 @@
+#فقط برای گرفتن اطلاعات 
+                'نام و نام خانوادگی': full_name,
+                'آیدی عددی': user.id,
+                'یوزرنیم': u_name,
+                'وضعیت': 'عضو فعلی'
+
+
+import pandas as pd
+from telethon.sync import TelegramClient
+from telethon.tl.types import MessageService, MessageActionChatAddUser, MessageActionChatJoinedByLink, MessageActionChatDeleteUser
+
+# --- اطلاعات شخصی شما (از my.telegram.org دریافت کنید) ---
+api_id = ''          # آیدی عددی شما
+api_hash = ''   # هش اختصاصی شما
+# -------------------------------------------------------
+
+# یوزرنیم یا لینک گروه (بدون @ یا با @ فرقی نمی‌کند)
+# مثال: 'python_group' یا 'https://t.me/example'
+group_username = '' 
+
+client = TelegramClient('my_session', api_id, 'api_hash')
+
+async def main():
+    await client.start()
+    print("✅ متصل شد. در حال استخراج لیست کامل اعضا...")
+
+    all_members = []
+    all_activities = []
+
+    try:
+        # ۱. استخراج لیست تمام اعضای فعلی گروه (حتی بی صداها)
+        async for user in client.iter_participants(group_username):
+            f_name = user.first_name or ""
+            l_name = user.last_name or ""
+            full_name = f"{f_name} {l_name}".strip()
+            u_name = f"@{user.username}" if user.username else "بدون یوزرنیم"
+            
+            all_members.append({
+                'نام و نام خانوادگی': full_name,
+                'آیدی عددی': user.id,
+                'یوزرنیم': u_name,
+                'وضعیت': 'عضو فعلی'
+            })
+
+        print(f"👥 تعداد {len(all_members)} عضو پیدا شد.")
+
+        # ۲. استخراج پیام‌ها و رویدادهای ورود/خروج
+        print("📥 در حال بررسی پیام‌ها و تاریخچه ورود و خروج...")
+        async for message in client.iter_messages(group_username, limit=500):
+            sender = await message.get_sender()
+            
+            if isinstance(message, MessageService):
+                action = message.action
+                msg_type = ""
+                if isinstance(action, (MessageActionChatAddUser, MessageActionChatJoinedByLink)):
+                    msg_type = "📥 ورود جدید"
+                elif isinstance(action, MessageActionChatDeleteUser):
+                    msg_type = "📤 خروج/حذف"
+                
+                if msg_type:
+                    f_name = getattr(sender, 'first_name', '') or ""
+                    l_name = getattr(sender, 'last_name', '') or ""
+                    all_activities.append({
+                        'نام': f"{f_name} {l_name}".strip(),
+                        'آیدی عددی': getattr(sender, 'id', 'N/A'),
+                        'نوع فعالیت': msg_type,
+                        'تاریخ': message.date.strftime("%Y-%m-%d %H:%M")
+                    })
+
+        # ۳. ذخیره در دو شیت مجزا در یک فایل اکسل
+        with pd.ExcelWriter('telegram_full_report.xlsx') as writer:
+            pd.DataFrame(all_members).to_excel(writer, sheet_name='لیست تمام اعضا', index=False)
+            pd.DataFrame(all_activities).to_excel(writer, sheet_name='تاریخچه ورود و خروج', index=False)
+
+        print("✨ عملیات با موفقیت تمام شد. فایل 'telegram_full_report.xlsx' را باز کنید.")
+        print("💡 نکته: پایین فایل اکسل دو تب (Sheet) وجود دارد؛ یکی برای اعضا و یکی برای فعالیت‌ها.")
+
+    except Exception as e:
+        print(f"❌ خطا: {e}")
+
+with client:
+    client.loop.run_until_complete(main())
