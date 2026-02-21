@@ -1,0 +1,165 @@
+
+# اطلاعات اعضا با عکس پروفایل
+
+import os
+import cv2
+import pandas as pd
+import asyncio
+from telethon import TelegramClient
+
+# -------- تنظیمات شخصی --------
+api_id =   # ← عدد بگذار (بدون کوتیشن)
+api_hash = ""
+target_group_name = "B1-B2- 16.01.2026 - 26 Dey"# --------------------------------
+
+# مدل تشخیص چهره OpenCV (پایدار و بدون دردسر نسخه)
+face_cascade = cv2.CascadeClassifier(
+    cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
+)
+
+client = TelegramClient("final_stable_session", api_id, api_hash)
+
+
+def has_face(image_path):
+    try:
+        image = cv2.imread(image_path)
+        if image is None:
+            return False
+
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
+        faces = face_cascade.detectMultiScale(
+            gray,
+            scaleFactor=1.1,
+            minNeighbors=5,
+            minSize=(30, 30)
+        )
+
+        return len(faces) > 0
+    except:
+        return False
+
+
+async def main():
+    await client.start()
+
+    # پیدا کردن گروه
+    target_group = None
+    async for dialog in client.iter_dialogs():
+        if dialog.name == target_group_name:
+            target_group = dialog.entity
+            break
+
+    if not target_group:
+        print("❌ گروه پیدا نشد!")
+        return
+
+    os.makedirs("member_photos", exist_ok=True)
+
+    user_cache = {}
+    print("⏳ شروع دانلود عکس‌ها و استخراج پیام‌ها...")
+
+
+    async for user in client.iter_participants(target_group):
+        u_id = user.id
+
+    # اول نام و نام خانوادگی را بگیریم
+    first = user.first_name or ""
+    last = user.last_name or ""
+    full_name = f"{first} {last}".strip()
+
+    # اگر نام خالی بود، از username استفاده کن
+    if not full_name and user.username:
+        full_name = f"@{user.username}"
+
+    # اگر هنوز خالی بود، از شماره موبایل استفاده کن
+    if not full_name and getattr(user, 'phone', None):
+        full_name = user.phone
+
+    # اگر همه خالی بود، نام پیشفرض بده
+    if not full_name:
+        full_name = f"User_{u_id}"
+
+    username = f"@{user.username}" if user.username else "N/A"
+    phone = getattr(user, 'phone', "N/A")  # شماره موبایل اگر موجود باشد
+
+    user_cache[u_id] = {
+        "name": full_name,
+        "username": username,
+        "phone": phone
+    }
+
+
+    # ---------- دریافت اعضا و دانلود عکس ----------
+    async for user in client.iter_participants(target_group):
+        u_id = user.id
+        full_name = f"{user.first_name or ''} {user.last_name or ''}".strip() or "User"
+        username = f"@{user.username}" if user.username else "N/A"
+
+        user_cache[u_id] = {
+            "name": full_name,
+            "username": username
+        }
+
+        try:
+            photos = await client.get_profile_photos(user, limit=None)
+
+            if photos:
+                user_folder = f"member_photos/{u_id}"
+                os.makedirs(user_folder, exist_ok=True)
+
+                for i, photo in enumerate(photos):
+                    path = await client.download_media(
+                        photo,
+                        file=f"{user_folder}/temp_{i}.jpg"
+                    )
+
+                    if path and has_face(path):
+                        os.rename(path, f"{user_folder}/face_{i}.jpg")
+                    elif path:
+                        os.rename(path, f"{user_folder}/unknown_{i}.jpg")
+
+            await asyncio.sleep(0.5)  # جلوگیری از Flood تلگرام
+
+        except Exception:
+            continue
+
+    # ---------- استخراج پیام‌ها ----------
+    data = []
+
+    async for message in client.iter_messages(target_group, limit=None):
+        try:
+            u_id = message.sender_id  # روش صحیح در نسخه‌های جدید
+
+            info = user_cache.get(
+                u_id,
+                {"name": f"User_{u_id}", "username": "N/A"}
+            )
+
+            data.append({
+                "Full_Name": info["name"],
+                "User_ID": str(u_id),
+                "Username": info["username"],
+                "Phone": info.get("phone", "N/A"),  # شماره موبایل اضافه شد
+                "Text_Message": (
+                    message.text.replace("\n", " ")
+                    if message.text else "<Media>"
+                ),
+                "Date": message.date.strftime("%Y-%m-%d %H:%M")
+            })
+
+        except Exception:
+            continue
+
+    # ذخیره CSV
+    df = pd.DataFrame(data)
+    # df.to_csv("final_report.csv",sep='^', index=False, encoding="utf-8-sig")
+    df.to_csv('group_complete_report.csv', sep='^', index=False, encoding='utf-8-sig', quoting=1)
+    print("✅ عملیات کامل شد!")
+    print("📁 پوشه member_photos ساخته شد")
+    print("📄 فایل final_report.csv ذخیره شد")
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
+
