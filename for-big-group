@@ -1,0 +1,100 @@
+
+
+import pandas as pd
+from telethon.sync import TelegramClient
+from telethon.tl.types import MessageService, MessageActionChatAddUser, MessageActionChatJoinedByLink, MessageActionChatDeleteUser
+import asyncio
+
+api_id = ''
+api_hash = ''
+target_group_name ='ایران آوسبیلدونگ | Iran Ausbildung'
+client = TelegramClient('stable_session', api_id, 'api_hash')
+async def main():
+    await client.start()
+    
+    # پیدا کردن گروه
+    target_group = None
+    async for dialog in client.iter_dialogs():
+        if dialog.name == target_group_name:
+            target_group = dialog.entity
+            break
+
+    if not target_group:
+        print("❌ گروه پیدا نشد!")
+        return
+
+    # ۱. کش کردن اعضای فعلی
+    user_cache = {}
+    print("⏳ در حال دریافت لیست اعضای فعلی...")
+    async for user in client.iter_participants(target_group):
+        user_cache[user.id] = {
+            'name': f"{user.first_name or ''} {user.last_name or ''}".strip() or "User",
+            'username': f"@{user.username}" if user.username else "N/A"
+        }
+
+    data = []
+    print(f"🚀 شروع استخراج پیام‌ها...")
+
+    count = 0
+    # استفاده از جزییات کامل پیام (GetFullSender)
+    async for message in client.iter_messages(target_group, limit=1000):
+        try:
+            sender = await message.get_sender()
+            
+            # استخراج آیدی
+            u_id = sender.id if sender else (message.from_id.user_id if hasattr(message.from_id, 'user_id') else None)
+            
+            # اگر در کش نبود، مشخصات را از خود فرستنده پیام استخراج کن
+            if sender and u_id not in user_cache:
+                f_name = getattr(sender, 'first_name', '') or ""
+                l_name = getattr(sender, 'last_name', '') or ""
+                user_cache[u_id] = {
+                    'name': f"{f_name} {l_name}".strip() or f"User_{u_id}",
+                    'username': f"@{sender.username}" if getattr(sender, 'username', None) else "N/A"
+                }
+
+            # تشخیص محتوا و فعالیت
+            activity = "پیام معمولی"
+            msg_content = message.text if message.text else "<Media/File>"
+            
+            if isinstance(message, MessageService):
+                action = message.action
+                if isinstance(action, (MessageActionChatAddUser, MessageActionChatJoinedByLink)):
+                    activity = "ورود"
+                    msg_content = "📥 ورود به گروه"
+                elif isinstance(action, MessageActionChatDeleteUser):
+                    activity = "خروج"
+                    msg_content = "📤 خروج/حذف"
+
+            # نهایی کردن اطلاعات
+            info = user_cache.get(u_id, {'name': f"User_{u_id}", 'username': "N/A"})
+
+            data.append({
+                'Full_Name': info['name'],
+                'User_ID': str(u_id),
+                'Username': info['username'],
+                'Activity': activity,
+                'Text_Message': str(msg_content).replace('\n', ' '),
+                'Date': message.date.strftime("%Y-%m-%d %H:%M")
+            })
+
+            count += 1
+            if count % 1000 == 0:
+                print(f"✅ {count} پیام پردازش شد...")
+
+        except Exception as e:
+            # در صورت خطای موقت تلگرام، کمی صبر کن
+            if "FloodWait" in str(e):
+                await asyncio.sleep(10)
+            continue
+
+    # ذخیره سازی
+    df = pd.DataFrame(data)
+    df.to_csv('telegram_ultimate_report.csv', index=False, encoding='utf-8-sig', quoting=1)
+    print(f"✨ تمام شد! ۱۹۰ هزار پیام با یوزرنیم بررسی و در 'telegram_ultimate_report.csv' ذخیره شد.")
+
+with client:
+    client.loop.run_until_complete(main())
+
+
+    
