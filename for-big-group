@@ -1,100 +1,281 @@
-
-
 import pandas as pd
-from telethon.sync import TelegramClient
-from telethon.tl.types import MessageService, MessageActionChatAddUser, MessageActionChatJoinedByLink, MessageActionChatDeleteUser
 import asyncio
+import re
+import os
+from collections import defaultdict
+from telethon import TelegramClient
+from telethon.errors import FloodWaitError
+from telethon.tl.types import (
+    MessageService,
+    MessageActionChatAddUser,
+    MessageActionChatJoinedByLink,
+    MessageActionChatDeleteUser,
+    MessageEntityTextUrl,
+    MessageEntityMentionName,
+    MessageEntityMention
+)
+
+# ==============================
+# تنظیمات
+# ==============================
 
 api_id = ''
-api_hash = ''
-target_group_name ='ایران آوسبیلدونگ | Iran Ausbildung'
-client = TelegramClient('stable_session', api_id, 'api_hash')
+api_hash = ""
+
+target_group = ""
+
+BATCH_SIZE = 5000
+
+client = TelegramClient("stable_session", api_id, api_hash)
+
+# ==============================
+# تابع امن برای نام فایل
+# ==============================
+
+
+def safe_filename(name):
+    cleaned = re.sub(r'[\\/*?:"<>|]', "", name)
+    cleaned = re.sub(r'[^\w\s\-آ-ی]', '', cleaned)
+    cleaned = cleaned.strip()
+
+    if not cleaned:
+        cleaned = "Telegram_Group"
+
+    return cleaned
+
+# ==============================
+# برنامه اصلی
+# ==============================
+
+
 async def main():
     await client.start()
-    
-    # پیدا کردن گروه
-    target_group = None
-    async for dialog in client.iter_dialogs():
-        if dialog.name == target_group_name:
-            target_group = dialog.entity
-            break
 
-    if not target_group:
-        print("❌ گروه پیدا نشد!")
+    print("🔎 پیدا کردن گروه...")
+
+    try:
+        group = await client.get_entity(target_group)
+    except:
+        print("❌ گروه پیدا نشد")
         return
 
-    # ۱. کش کردن اعضای فعلی
+    group_name = group.title
+    safe_name = safe_filename(group_name)
+
+    messages_file = f"{safe_name}_Messages.csv"
+    summary_file = f"{safe_name}_User_Summary.csv"
+    stats_file = f"{safe_name}_Group_Stats.csv"
+
+    # حذف فایل‌های قبلی
+    for f in [messages_file, summary_file, stats_file]:
+        if os.path.exists(f):
+            os.remove(f)
+
+    print(f"✅ گروه پیدا شد: {group_name}")
+
+    # ساخت هدر فایل پیام‌ها
+    columns = [
+        "Full_Name",
+        "User_ID",
+        "Username",
+        "Activity",
+        "Text_Message",
+        "Mentioned_User_ID",
+        "Mentioned_Full_Name",
+        "Mentioned_Username",
+        "Total_Messages_By_User",
+        "Date"
+    ]
+
+    pd.DataFrame(columns=columns).to_csv(
+        messages_file,
+        index=False,
+        sep="^",
+        encoding="utf-8-sig"
+    )
+
     user_cache = {}
-    print("⏳ در حال دریافت لیست اعضای فعلی...")
-    async for user in client.iter_participants(target_group):
-        user_cache[user.id] = {
-            'name': f"{user.first_name or ''} {user.last_name or ''}".strip() or "User",
-            'username': f"@{user.username}" if user.username else "N/A"
-        }
+    message_count = defaultdict(int)
+    mention_given_count = defaultdict(int)
+    mention_received_count = defaultdict(int)
 
-    data = []
-    print(f"🚀 شروع استخراج پیام‌ها...")
+    buffer = []
+    total_processed = 0
 
-    count = 0
-    # استفاده از جزییات کامل پیام (GetFullSender)
-    async for message in client.iter_messages(target_group, limit=1000):
+    print("🚀 شروع استخراج پیام‌ها...")
+
+    async for message in client.iter_messages(group, reverse=True):
+
         try:
-            sender = await message.get_sender()
-            
-            # استخراج آیدی
-            u_id = sender.id if sender else (message.from_id.user_id if hasattr(message.from_id, 'user_id') else None)
-            
-            # اگر در کش نبود، مشخصات را از خود فرستنده پیام استخراج کن
-            if sender and u_id not in user_cache:
-                f_name = getattr(sender, 'first_name', '') or ""
-                l_name = getattr(sender, 'last_name', '') or ""
+            if not message.sender_id:
+                continue
+
+            u_id = message.sender_id
+            message_count[u_id] += 1
+
+            if u_id not in user_cache:
+                user = await client.get_entity(u_id)
                 user_cache[u_id] = {
-                    'name': f"{f_name} {l_name}".strip() or f"User_{u_id}",
-                    'username': f"@{sender.username}" if getattr(sender, 'username', None) else "N/A"
+                    "name": f"{user.first_name or ''} {user.last_name or ''}".strip() or f"User_{u_id}",
+                    "username": f"@{user.username}" if user.username else "N/A"
                 }
 
-            # تشخیص محتوا و فعالیت
+            sender_info = user_cache[u_id]
+
             activity = "پیام معمولی"
             msg_content = message.text if message.text else "<Media/File>"
-            
+
             if isinstance(message, MessageService):
                 action = message.action
                 if isinstance(action, (MessageActionChatAddUser, MessageActionChatJoinedByLink)):
                     activity = "ورود"
-                    msg_content = "📥 ورود به گروه"
                 elif isinstance(action, MessageActionChatDeleteUser):
                     activity = "خروج"
-                    msg_content = "📤 خروج/حذف"
 
-            # نهایی کردن اطلاعات
-            info = user_cache.get(u_id, {'name': f"User_{u_id}", 'username': "N/A"})
+            mentioned_ids = []
+            mentioned_names = []
+            mentioned_usernames = []
 
-            data.append({
-                'Full_Name': info['name'],
-                'User_ID': str(u_id),
-                'Username': info['username'],
-                'Activity': activity,
-                'Text_Message': str(msg_content).replace('\n', ' '),
-                'Date': message.date.strftime("%Y-%m-%d %H:%M")
+            if message.entities and message.text:
+                for entity in message.entities:
+
+                    mentioned_id = None
+
+                    if isinstance(entity, MessageEntityTextUrl):
+                        if "tg://user?id=" in entity.url:
+                            mentioned_id = int(entity.url.split("id=")[-1])
+
+                    elif isinstance(entity, MessageEntityMentionName):
+                        mentioned_id = entity.user_id
+
+                    elif isinstance(entity, MessageEntityMention):
+                        offset = entity.offset
+                        length = entity.length
+                        username = message.text[offset: offset + length]
+                        try:
+                            user_obj = await client.get_entity(username)
+                            mentioned_id = user_obj.id
+                        except:
+                            continue
+
+                    if mentioned_id:
+                        mention_given_count[u_id] += 1
+                        mention_received_count[mentioned_id] += 1
+
+                        if mentioned_id not in user_cache:
+                            try:
+                                user_obj = await client.get_entity(mentioned_id)
+                                user_cache[mentioned_id] = {
+                                    "name": f"{user_obj.first_name or ''} {user_obj.last_name or ''}".strip(),
+                                    "username": f"@{user_obj.username}" if user_obj.username else "N/A"
+                                }
+                            except:
+                                user_cache[mentioned_id] = {
+                                    "name": f"User_{mentioned_id}",
+                                    "username": "N/A"
+                                }
+
+                        mentioned_info = user_cache[mentioned_id]
+
+                        mentioned_ids.append(str(mentioned_id))
+                        mentioned_names.append(mentioned_info["name"])
+                        mentioned_usernames.append(mentioned_info["username"])
+
+            buffer.append({
+                "Full_Name": sender_info["name"],
+                "User_ID": str(u_id),
+                "Username": sender_info["username"],
+                "Activity": activity,
+                "Text_Message": str(msg_content).replace("\n", " "),
+                "Mentioned_User_ID": " | ".join(mentioned_ids),
+                "Mentioned_Full_Name": " | ".join(mentioned_names),
+                "Mentioned_Username": " | ".join(mentioned_usernames),
+                "Total_Messages_By_User": message_count[u_id],
+                "Date": message.date.strftime("%Y-%m-%d %H:%M")
             })
 
-            count += 1
-            if count % 1000 == 0:
-                print(f"✅ {count} پیام پردازش شد...")
+            total_processed += 1
 
-        except Exception as e:
-            # در صورت خطای موقت تلگرام، کمی صبر کن
-            if "FloodWait" in str(e):
-                await asyncio.sleep(10)
+            if total_processed % BATCH_SIZE == 0:
+
+                df_batch = pd.DataFrame(buffer)
+
+                df_batch.to_csv(
+                    messages_file,
+                    mode="a",
+                    header=False,
+                    index=False,
+                    sep="^",
+                    encoding="utf-8-sig"
+                )
+
+                buffer.clear()
+                print(f"💾 ذخیره تا پیام {total_processed}")
+
+        except FloodWaitError as e:
+            print(f"⏳ FloodWait: {e.seconds} ثانیه صبر")
+            await asyncio.sleep(e.seconds)
+        except:
             continue
 
-    # ذخیره سازی
-    df = pd.DataFrame(data)
-    df.to_csv('telegram_ultimate_report.csv', index=False, encoding='utf-8-sig', quoting=1)
-    print(f"✨ تمام شد! ۱۹۰ هزار پیام با یوزرنیم بررسی و در 'telegram_ultimate_report.csv' ذخیره شد.")
+    # ذخیره باقیمانده
+    if buffer:
+        df_batch = pd.DataFrame(buffer)
+        df_batch.to_csv(
+            messages_file,
+            mode="a",
+            header=False,
+            index=False,
+            sep="^",
+            encoding="utf-8-sig"
+        )
 
+    print("📊 ساخت آمار تحلیلی...")
+
+    summary_data = []
+
+    for user_id, info in user_cache.items():
+        summary_data.append({
+            "Full_Name": info["name"],
+            "User_ID": user_id,
+            "Username": info["username"],
+            "Total_Messages": message_count[user_id],
+            "Mentions_Given": mention_given_count[user_id],
+            "Mentions_Received": mention_received_count[user_id]
+        })
+
+    df_summary = pd.DataFrame(summary_data)
+
+    df_summary.to_csv(
+        summary_file,
+        index=False,
+        sep="^",
+        encoding="utf-8-sig"
+    )
+
+    top_given = df_summary.sort_values(
+        "Mentions_Given", ascending=False).iloc[0]
+    top_received = df_summary.sort_values(
+        "Mentions_Received", ascending=False).iloc[0]
+
+    stats = pd.DataFrame([{
+        "Total_Messages": total_processed,
+        "Total_Users": len(user_cache),
+        "Top_Mention_Giver": top_given["Full_Name"],
+        "Top_Mentions_Given": top_given["Mentions_Given"],
+        "Top_Mention_Receiver": top_received["Full_Name"],
+        "Top_Mentions_Received": top_received["Mentions_Received"]
+    }])
+
+    stats.to_csv(
+        stats_file,
+        index=False,
+        sep="^",
+        encoding="utf-8-sig"
+    )
+
+    print("✨ استخراج کامل شد.")
+
+# اجرا
 with client:
     client.loop.run_until_complete(main())
-
-
-    
