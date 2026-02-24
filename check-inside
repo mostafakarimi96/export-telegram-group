@@ -1,0 +1,33 @@
+# دیدن اطلاعات داخل فایل
+
+# import sqlite3
+
+# conn = sqlite3.connect("shekar.db")
+# cursor = conn.cursor()
+
+# # گرفتن جدول‌ها
+# cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
+# tables = cursor.fetchall()
+
+# for table in tables:
+#     table_name = table[0]
+#     print("\n==============================")
+#     print(f"Table: {table_name}")
+    
+#     # ساختار جدول
+#     cursor.execute(f"PRAGMA table_info({table_name});")
+#     columns = cursor.fetchall()
+    
+#     print("Columns:")
+#     for column in columns:
+#         print(column)
+    
+#     # نمایش چند ردیف
+#     cursor.execute(f"SELECT * FROM {table_name} LIMIT 5;")
+#     rows = cursor.fetchall()
+    
+#     print("\nSample Data:")
+#     for row in rows:
+#         print(row)
+
+# conn.close()
