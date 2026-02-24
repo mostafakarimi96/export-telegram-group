@@ -1,3 +1,6 @@
+#خروجی گرفتن از گروه های تلگرامی
+
+
 import pandas as pd
 import asyncio
 import re
